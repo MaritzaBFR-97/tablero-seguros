@@ -24,6 +24,7 @@ import streamlit as st
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 import warnings; warnings.filterwarnings("ignore")
+import gspread
 
 st.set_page_config(page_title="Tablero de cartera — Diplomado ML Seguros",
                    page_icon="📊", layout="wide")
@@ -31,6 +32,13 @@ st.set_page_config(page_title="Tablero de cartera — Diplomado ML Seguros",
 # --- rutas ancladas a ESTA carpeta (clave para el deploy) ---------------------
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RUTA_DB = os.path.join(AQUI, "cartera.db")
+
+@st.cache_resource
+def hoja():
+    gc = gspread.service_account_from_dict(
+        st.secrets["gcp_service_account"]
+    )
+    return gc.open_by_url(st.secrets["sheet_url"]).sheet1
 
 def ruta_parquet():
     archivo = os.path.join(AQUI, "datos", "datos.parquet")
@@ -277,12 +285,34 @@ with tab_cotiza:
               "bonus": c4.slider("Bonus-malus", 0, 25, 5)}
     if st.button("Cotizar", type="primary"):
         st.session_state["perfil"] = perfil
+        st.session_state["guardar_cotizacion_pendiente"] = True
 
     if "perfil" in st.session_state:
         p = st.session_state["perfil"]
         pp_emp, n = cotizar_empirico(datos, p)
         freq, sev, pp_glm, pp_tw = cotizar_glm(p, m_freq, m_sev, m_agg)
         tarifa = pp_glm / (1 - gastos - margen)
+        
+        if st.session_state.get("guardar_cotizacion_pendiente", False):
+            try:
+                hoja().append_row([
+                    pd.Timestamp.now().isoformat(),
+                    p["edad_conductor"],
+                    p["cobertura"],
+                    p["sexo"],
+                    p["uso"],
+                    p["combustible"],
+                    p["antiguedad"],
+                    p["potencia"],
+                    p["bonus"],
+                    round(float(pp_glm), 2),
+                    round(float(tarifa), 2)
+                ])
+                st.success("Cotización guardada en Google Sheets ✔")
+            except Exception as e:
+                st.error(f"No se pudo guardar la cotización: {e}")
+            finally:
+                st.session_state["guardar_cotizacion_pendiente"] = False
 
         # KPIs del cotizador EN ORDEN: 1 lo que dice la data → 2 el modelo → 3 el precio
         k1, k2, k3 = st.columns(3)
